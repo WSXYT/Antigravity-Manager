@@ -24,6 +24,7 @@ pub struct ProxyServiceState {
     pub monitor: Arc<RwLock<Option<Arc<ProxyMonitor>>>>,
     pub admin_server: Arc<RwLock<Option<AdminServerInstance>>>, // [NEW] 常驻管理服务器
     pub starting: Arc<AtomicBool>, // [NEW] 标识是否正在启动中，防止死锁
+    pub token_manager: Arc<RwLock<Option<Arc<TokenManager>>>>, // [FIX] 共享 TokenManager 实例
 }
 
 pub struct AdminServerInstance {
@@ -46,6 +47,7 @@ impl ProxyServiceState {
             monitor: Arc::new(RwLock::new(None)),
             admin_server: Arc::new(RwLock::new(None)),
             starting: Arc::new(AtomicBool::new(false)),
+            token_manager: Arc::new(RwLock::new(None)), // [FIX] 初始化为 None
         }
     }
 }
@@ -115,12 +117,23 @@ pub async fn internal_start_proxy_service(
     
     let _monitor = state.monitor.read().await.as_ref().unwrap().clone();
     
-    // 2. 初始化 Token 管理器
-    let app_data_dir = crate::modules::account::get_data_dir()?;
-    let _ = crate::modules::account::get_accounts_dir()?;
-    let accounts_dir = app_data_dir.clone();
+    // [FIX] 获取或创建共享的 TokenManager 实例
+    let token_manager = {
+        let mut tm_lock = state.token_manager.write().await;
+        if tm_lock.is_none() {
+            // 首次创建 TokenManager
+            let app_data_dir = crate::modules::account::get_data_dir()?;
+            let _ = crate::modules::account::get_accounts_dir()?;
+            let tm = Arc::new(TokenManager::new(app_data_dir));
+            *tm_lock = Some(tm.clone());
+            tm
+        } else {
+            // 复用已存在的 TokenManager
+            tm_lock.as_ref().unwrap().clone()
+        }
+    };
     
-    let token_manager = Arc::new(TokenManager::new(accounts_dir));
+    // 2. 配置 Token 管理器
     token_manager.start_auto_cleanup();
     token_manager.update_sticky_config(config.scheduling.clone()).await;
     
@@ -208,11 +221,22 @@ pub async fn ensure_admin_server(
         monitor_lock.as_ref().unwrap().clone()
     };
 
-    // 默认空 TokenManager 用于管理界面
-    let app_data_dir = crate::modules::account::get_data_dir()?;
-    let token_manager = Arc::new(TokenManager::new(app_data_dir));
-    // [NEW] 加载账号数据，否则管理界面统计为 0
-    let _ = token_manager.load_accounts().await;
+    // [FIX] 使用或创建共享的 TokenManager 实例
+    let token_manager = {
+        let mut tm_lock = state.token_manager.write().await;
+        if tm_lock.is_none() {
+            // 首次创建 TokenManager
+            let app_data_dir = crate::modules::account::get_data_dir()?;
+            let tm = Arc::new(TokenManager::new(app_data_dir));
+            // 加载账号数据，否则管理界面统计为 0
+            let _ = tm.load_accounts().await;
+            *tm_lock = Some(tm.clone());
+            tm
+        } else {
+            // 复用已存在的 TokenManager
+            tm_lock.as_ref().unwrap().clone()
+        }
+    };
 
     let (axum_server, server_handle) =
         match crate::proxy::AxumServer::start(
