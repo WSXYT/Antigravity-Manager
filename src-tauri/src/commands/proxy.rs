@@ -133,7 +133,7 @@ pub async fn internal_start_proxy_service(
         }
     };
     
-    // 2. 配置 Token 管理器
+    // 2. 配置 Token 管理器（每次启动 proxy service 时都应用最新配置）
     token_manager.start_auto_cleanup();
     token_manager.update_sticky_config(config.scheduling.clone()).await;
     
@@ -228,6 +228,22 @@ pub async fn ensure_admin_server(
             // 首次创建 TokenManager
             let app_data_dir = crate::modules::account::get_data_dir()?;
             let tm = Arc::new(TokenManager::new(app_data_dir));
+            
+            // [FIX] 应用基础配置，确保即使独立启动也能正常工作
+            tm.start_auto_cleanup();
+            
+            // 从全局配置加载调度配置和熔断器配置
+            if let Ok(app_config) = crate::modules::config::load_app_config() {
+                tm.update_sticky_config(app_config.proxy.scheduling.clone()).await;
+                tm.update_circuit_breaker_config(app_config.circuit_breaker).await;
+                
+                // 恢复固定账号模式设置（如果有）
+                if let Some(ref account_id) = app_config.proxy.preferred_account_id {
+                    tm.set_preferred_account(Some(account_id.clone())).await;
+                    tracing::info!("🔒 [ensure_admin_server] Fixed account mode restored: {}", account_id);
+                }
+            }
+            
             // 加载账号数据，否则管理界面统计为 0
             let _ = tm.load_accounts().await;
             *tm_lock = Some(tm.clone());
