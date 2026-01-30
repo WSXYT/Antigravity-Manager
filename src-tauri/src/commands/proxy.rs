@@ -480,20 +480,20 @@ pub fn generate_api_key() -> String {
 pub async fn reload_proxy_accounts(
     state: State<'_, ProxyServiceState>,
 ) -> Result<usize, String> {
-    let instance_lock = state.instance.read().await;
-
-    if let Some(instance) = instance_lock.as_ref() {
+    // [FIX] Use shared TokenManager from state to support reloading even when proxy is not running
+    let tm_lock = state.token_manager.read().await;
+    if let Some(token_manager) = tm_lock.as_ref() {
         // [FIX #820] Clear stale session bindings before reloading accounts
         // This ensures that after switching accounts in the UI, API requests
         // won't be routed to the previously bound (wrong) account
-        instance.token_manager.clear_all_sessions();
+        token_manager.clear_all_sessions();
 
         // 重新加载账号
-        let count = instance.token_manager.load_accounts().await
+        let count = token_manager.load_accounts().await
             .map_err(|e| format!("重新加载账号失败: {}", e))?;
         Ok(count)
     } else {
-        Err("服务未运行".to_string())
+        Err("TokenManager 未初始化".to_string())
     }
 }
 
