@@ -855,10 +855,7 @@ impl TokenManager {
         
             // 3. 检查 token 是否过期（提前5分钟刷新）
             let now = chrono::Utc::now().timestamp();
-            let token_expired = now >= token.timestamp;
-            let token_expiring_soon = now >= token.timestamp - 300;
-            
-            if token_expiring_soon {
+            if now >= token.timestamp - 300 {
                 tracing::debug!("账号 {} 的 token 即将过期，正在刷新...", token.email);
 
                 // 调用 OAuth 刷新 token
@@ -884,8 +881,9 @@ impl TokenManager {
                         }
                     }
                     Err(e) => {
-                        // 永久性错误：invalid_grant 表示 refresh_token 已被撤销或过期
+                        // 【关键修复】区分永久性错误和临时性错误
                         if e.contains("\"invalid_grant\"") || e.contains("invalid_grant") {
+                            // 永久性错误：refresh_token 已被撤销或过期
                             tracing::error!(
                                 "Token 刷新失败 ({}): {} - refresh_token 已失效，禁用账号",
                                 token.email, e
@@ -894,42 +892,45 @@ impl TokenManager {
                                 .disable_account(&token.account_id, &format!("invalid_grant: {}", e))
                                 .await;
                             self.tokens.remove(&token.account_id);
+                            // 只有永久性错误才标记为 attempted
                             attempted.insert(token.account_id.clone());
                             last_error = Some(format!("Token refresh failed: {}", e));
+                        } else {
+                            // 临时性错误：网络问题、API 暂时不可用等
+                            // 检查 token 是否已经过期
+                            let token_expired = now >= token.timestamp;
                             
-                            // 【优化】标记需要清除锁定
-                            if quota_group != "image_gen" {
-                                if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
-                                    need_update_last_used = Some((String::new(), std::time::Instant::now()));
-                                }
+                            if token_expired {
+                                // Token 已过期，必须刷新成功才能使用
+                                tracing::warn!(
+                                    "Token 已过期且刷新失败 ({}): {}，跳过此账号",
+                                    token.email, e
+                                );
+                                attempted.insert(token.account_id.clone());
+                                last_error = Some(format!("Token expired and refresh failed: {}", e));
+                            } else {
+                                // Token 还未过期，可以继续使用
+                                // 【关键】不标记为 attempted，允许继续使用
+                                tracing::warn!(
+                                    "Token 刷新失败 ({}): {}，但 token 还有 {}秒有效期，继续使用",
+                                    token.email, e, token.timestamp - now
+                                );
+                                // 不添加到 attempted，继续使用当前 token
+                                // 不 continue，继续执行后续逻辑
+                                // 将 last_error 设置为 None，因为我们可以继续
                             }
-                            continue;
+                        }
+
+                        // 【优化】标记需要清除锁定，避免在循环内加锁
+                        if quota_group != "image_gen" {
+                            if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
+                                need_update_last_used = Some((String::new(), std::time::Instant::now()));
+                            }
                         }
                         
-                        // 【关键修复】临时性错误的处理：
-                        // - 如果 token 已经真正过期，必须刷新成功才能使用，跳过此账号
-                        // - 如果 token 还未过期（只是接近过期），可以继续使用旧 token
-                        if token_expired {
-                            tracing::warn!(
-                                "Token 已过期且刷新失败 ({}): {}，跳过此账号",
-                                token.email, e
-                            );
-                            attempted.insert(token.account_id.clone());
-                            last_error = Some(format!("Token refresh failed: {}", e));
-                            
-                            if quota_group != "image_gen" {
-                                if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
-                                    need_update_last_used = Some((String::new(), std::time::Instant::now()));
-                                }
-                            }
+                        // 只有标记为 attempted 的才 continue
+                        if attempted.contains(&token.account_id) {
                             continue;
-                        } else {
-                            // Token 还未过期，可以继续使用
-                            tracing::warn!(
-                                "Token 刷新失败 ({}): {}，但 token 还有 {}秒有效期，继续使用旧 token",
-                                token.email, e, token.timestamp - now
-                            );
-                            // 不添加到 attempted，不 continue，继续使用当前 token
                         }
                     }
                 }
@@ -949,14 +950,14 @@ impl TokenManager {
                         pid
                     }
                     Err(e) => {
-                        // 【关键修复】获取 project_id 失败时使用 fallback，而不是跳过账号
-                        // 原因：project_id 主要用于日志和部分 API，使用 fallback 值不影响核心功能
+                        // 【关键修复】project_id 获取失败不应该导致账号不可用
+                        // 使用 fallback project_id，不标记为 attempted
                         tracing::warn!(
-                            "Failed to fetch project_id for {}: {}. Using fallback project_id.",
+                            "获取 project_id 失败 ({}): {}，使用 fallback project_id",
                             token.email, e
                         );
                         
-                        // 使用 fallback project_id（Google 的默认值）
+                        // 使用 Google 的默认 fallback project_id
                         let fallback_pid = "bamboo-precept-lgxtn".to_string();
                         
                         // 保存 fallback 值，避免下次再次尝试获取
