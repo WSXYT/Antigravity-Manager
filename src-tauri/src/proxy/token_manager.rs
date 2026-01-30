@@ -882,6 +882,8 @@ impl TokenManager {
                     }
                     Err(e) => {
                         tracing::error!("Token 刷新失败 ({}): {}，尝试下一个账号", token.email, e);
+                        
+                        // Only mark as permanently failed for invalid_grant errors
                         if e.contains("\"invalid_grant\"") || e.contains("invalid_grant") {
                             tracing::error!(
                                 "Disabling account due to invalid_grant ({}): refresh_token likely revoked/expired",
@@ -891,10 +893,18 @@ impl TokenManager {
                                 .disable_account(&token.account_id, &format!("invalid_grant: {}", e))
                                 .await;
                             self.tokens.remove(&token.account_id);
+                            attempted.insert(token.account_id.clone());
+                        } else {
+                            // For temporary errors (network, timeout, etc.), don't mark as attempted
+                            // This allows the account to be retried in subsequent iterations
+                            tracing::warn!(
+                                "Token refresh temporarily failed for {}: {}. Will retry if needed.",
+                                token.email, e
+                            );
                         }
+                        
                         // Avoid leaking account emails to API clients; details are still in logs.
                         last_error = Some(format!("Token refresh failed: {}", e));
-                        attempted.insert(token.account_id.clone());
 
                         // 【优化】标记需要清除锁定，避免在循环内加锁
                         if quota_group != "image_gen" {
@@ -922,8 +932,15 @@ impl TokenManager {
                     }
                     Err(e) => {
                         tracing::error!("Failed to fetch project_id for {}: {}", token.email, e);
+                        
+                        // Don't mark as attempted for temporary failures
+                        // This allows retry in subsequent iterations
+                        tracing::warn!(
+                            "Project ID fetch temporarily failed for {}: {}. Will retry if needed.",
+                            token.email, e
+                        );
+                        
                         last_error = Some(format!("Failed to fetch project_id for {}: {}", token.email, e));
-                        attempted.insert(token.account_id.clone());
 
                         // 【优化】标记需要清除锁定，避免在循环内加锁
                         if quota_group != "image_gen" {
