@@ -23,7 +23,8 @@
     <a href="#-gui-overview">GUI Overview</a> • 
     <a href="#-architecture">Architecture</a> • 
     <a href="#-installation">Installation</a> • 
-    <a href="#-quick-integration">Integration</a>
+    <a href="#-quick-integration">Integration</a> • 
+    <a href="#-developer-guide">Developer Guide</a>
   </p>
 
   <p>
@@ -200,6 +201,22 @@ docker compose up -d
 > - **Persistence**: Mount `/root/.antigravity_tools` to persist your data.
 > - **Architecture**: Supports x86_64 and ARM64.
 > **See**: [Docker Deployment Guide (docker)](./docker/README.md)
+
+## 👨‍💻 Developer Guide
+
+### Building from Source
+
+If you want to build and package Antigravity Tools from source code, please refer to:
+
+- **[Build Guide (English)](./docs/BUILD_EN.md)** - Complete build instructions
+- **[构建打包指南 (中文)](./docs/BUILD_ZH.md)** - Detailed build steps in Chinese
+
+Documentation includes:
+- ✅ Prerequisites and dependency installation
+- ✅ Local development environment setup
+- ✅ Production build steps
+- ✅ Platform-specific notes (macOS/Linux/Windows)
+- ✅ Troubleshooting common issues
 
 ### 🛠️ Troubleshooting
 
