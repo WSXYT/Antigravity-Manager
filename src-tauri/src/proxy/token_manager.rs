@@ -881,28 +881,40 @@ impl TokenManager {
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Token 刷新失败 ({}): {}，尝试下一个账号", token.email, e);
+                        // 【核心修复】只有永久性错误才跳过账号，临时错误继续使用现有 token
                         if e.contains("\"invalid_grant\"") || e.contains("invalid_grant") {
+                            // 永久性错误：refresh_token 已被撤销或过期，账号不可用
                             tracing::error!(
-                                "Disabling account due to invalid_grant ({}): refresh_token likely revoked/expired",
-                                token.email
+                                "Token 刷新失败 ({}): {} - refresh_token 已失效，禁用账号",
+                                token.email, e
                             );
                             let _ = self
                                 .disable_account(&token.account_id, &format!("invalid_grant: {}", e))
                                 .await;
                             self.tokens.remove(&token.account_id);
-                        }
-                        // Avoid leaking account emails to API clients; details are still in logs.
-                        last_error = Some(format!("Token refresh failed: {}", e));
-                        attempted.insert(token.account_id.clone());
-
-                        // 【优化】标记需要清除锁定，避免在循环内加锁
-                        if quota_group != "image_gen" {
-                            if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
-                                need_update_last_used = Some((String::new(), std::time::Instant::now())); // 空字符串表示需要清除
+                            attempted.insert(token.account_id.clone());
+                            last_error = Some(format!("Token refresh failed: {}", e));
+                            
+                            // 【优化】标记需要清除锁定
+                            if quota_group != "image_gen" {
+                                if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
+                                    need_update_last_used = Some((String::new(), std::time::Instant::now()));
+                                }
                             }
+                            continue;
                         }
-                        continue;
+                        
+                        // 【关键】临时性错误（网络问题、API 暂时不可用等）：
+                        // 不管 token 剩余多少时间，都尝试使用现有 token
+                        // 如果 token 真的不可用，后续的 API 调用会自然失败并触发其他逻辑
+                        // 这样保证了行为的一致性 - 总是尝试使用，不会"有时能用有时不能用"
+                        tracing::warn!(
+                            "Token 刷新失败 ({}): {}，继续使用现有 token（剩余 {}秒）",
+                            token.email, e, token.timestamp - now
+                        );
+                        // 不标记为 attempted，不 continue，继续使用当前 token
+                        // 清除 last_error，因为我们选择继续使用
+                        last_error = None;
                     }
                 }
             }
@@ -921,17 +933,15 @@ impl TokenManager {
                         pid
                     }
                     Err(e) => {
-                        tracing::error!("Failed to fetch project_id for {}: {}", token.email, e);
-                        last_error = Some(format!("Failed to fetch project_id for {}: {}", token.email, e));
-                        attempted.insert(token.account_id.clone());
-
-                        // 【优化】标记需要清除锁定，避免在循环内加锁
-                        if quota_group != "image_gen" {
-                            if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
-                                need_update_last_used = Some((String::new(), std::time::Instant::now())); // 空字符串表示需要清除
-                            }
-                        }
-                        continue;
+                        // 【关键修复】project_id 获取失败时使用 fallback，不应该阻止账号使用
+                        tracing::warn!(
+                            "获取 project_id 失败 ({}): {}，使用 fallback project_id（此次请求）",
+                            token.email, e
+                        );
+                        
+                        // 使用 Google 的默认 fallback project_id
+                        // 注意：不保存到持久化存储，下次仍会尝试获取正确的 project_id
+                        "bamboo-precept-lgxtn".to_string()
                     }
                 }
             };
