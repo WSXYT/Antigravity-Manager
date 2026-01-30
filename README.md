@@ -21,8 +21,7 @@
     <a href="#-界面导览">界面导览</a> • 
     <a href="#-技术架构">技术架构</a> • 
     <a href="#-安装指南">安装指南</a> • 
-    <a href="#-快速接入">快速接入</a> • 
-    <a href="#-开发者指南">开发者指南</a>
+    <a href="#-快速接入">快速接入</a>
   </p>
 
   <p>
@@ -199,22 +198,6 @@ docker compose up -d
 > - **持久化**: 需挂载 `/root/.antigravity_tools` 以保存数据。
 > - **架构**: 支持 x86_64 和 ARM64。
 > **详情见**: [Docker 部署指南 (docker)](./docker/README.md)
-
-## 👨‍💻 开发者指南
-
-### 从源码构建
-
-如果您想从源代码构建和打包 Antigravity Tools，请参考：
-
-- **[构建打包指南 (中文)](./docs/BUILD_ZH.md)** - 详细的构建步骤和常见问题解决
-- **[Build Guide (English)](./docs/BUILD_EN.md)** - Complete build instructions in English
-
-文档包含：
-- ✅ 前置要求和依赖安装
-- ✅ 本地开发环境设置
-- ✅ 生产环境打包步骤
-- ✅ 平台特定说明 (macOS/Linux/Windows)
-- ✅ 常见问题排查
 
 ---
 
