@@ -897,27 +897,26 @@ impl TokenManager {
                             last_error = Some(format!("Token refresh failed: {}", e));
                         } else {
                             // 临时性错误：网络问题、API 暂时不可用等
-                            // 检查 token 是否已经过期
-                            let token_expired = now >= token.timestamp;
+                            // 检查 token 是否即将过期（5分钟阈值）
+                            let token_critically_expired = now >= token.timestamp - 60; // 1分钟阈值
                             
-                            if token_expired {
-                                // Token 已过期，必须刷新成功才能使用
+                            if token_critically_expired {
+                                // Token 即将过期（1分钟内），刷新失败风险太高
                                 tracing::warn!(
-                                    "Token 已过期且刷新失败 ({}): {}，跳过此账号",
-                                    token.email, e
+                                    "Token 即将过期（{}秒内）且刷新失败 ({}): {}，跳过此账号",
+                                    token.timestamp - now, token.email, e
                                 );
                                 attempted.insert(token.account_id.clone());
-                                last_error = Some(format!("Token expired and refresh failed: {}", e));
+                                last_error = Some(format!("Token expiring soon and refresh failed: {}", e));
                             } else {
-                                // Token 还未过期，可以继续使用
-                                // 【关键】不标记为 attempted，允许继续使用
+                                // Token 还有足够的有效期（超过1分钟），可以继续使用
                                 tracing::warn!(
                                     "Token 刷新失败 ({}): {}，但 token 还有 {}秒有效期，继续使用",
                                     token.email, e, token.timestamp - now
                                 );
                                 // 不添加到 attempted，继续使用当前 token
-                                // 不 continue，继续执行后续逻辑
-                                // 将 last_error 设置为 None，因为我们可以继续
+                                // 清除 last_error，因为我们成功处理了这个情况
+                                last_error = None;
                             }
                         }
 
@@ -950,23 +949,15 @@ impl TokenManager {
                         pid
                     }
                     Err(e) => {
-                        // 【关键修复】project_id 获取失败不应该导致账号不可用
-                        // 使用 fallback project_id，不标记为 attempted
+                        // 【关键修复】project_id 获取失败时使用 fallback，不应该阻止账号使用
                         tracing::warn!(
-                            "获取 project_id 失败 ({}): {}，使用 fallback project_id",
+                            "获取 project_id 失败 ({}): {}，使用 fallback project_id（此次请求）",
                             token.email, e
                         );
                         
                         // 使用 Google 的默认 fallback project_id
-                        let fallback_pid = "bamboo-precept-lgxtn".to_string();
-                        
-                        // 保存 fallback 值，避免下次再次尝试获取
-                        if let Some(mut entry) = self.tokens.get_mut(&token.account_id) {
-                            entry.project_id = Some(fallback_pid.clone());
-                        }
-                        let _ = self.save_project_id(&token.account_id, &fallback_pid).await;
-                        
-                        fallback_pid
+                        // 注意：不保存到持久化存储，下次仍会尝试获取正确的 project_id
+                        "bamboo-precept-lgxtn".to_string()
                     }
                 }
             };
