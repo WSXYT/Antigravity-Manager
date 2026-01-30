@@ -881,9 +881,9 @@ impl TokenManager {
                         }
                     }
                     Err(e) => {
-                        // 【关键修复】区分永久性错误和临时性错误
+                        // 【核心修复】只有永久性错误才跳过账号，临时错误继续使用现有 token
                         if e.contains("\"invalid_grant\"") || e.contains("invalid_grant") {
-                            // 永久性错误：refresh_token 已被撤销或过期
+                            // 永久性错误：refresh_token 已被撤销或过期，账号不可用
                             tracing::error!(
                                 "Token 刷新失败 ({}): {} - refresh_token 已失效，禁用账号",
                                 token.email, e
@@ -892,45 +892,29 @@ impl TokenManager {
                                 .disable_account(&token.account_id, &format!("invalid_grant: {}", e))
                                 .await;
                             self.tokens.remove(&token.account_id);
-                            // 只有永久性错误才标记为 attempted
                             attempted.insert(token.account_id.clone());
                             last_error = Some(format!("Token refresh failed: {}", e));
-                        } else {
-                            // 临时性错误：网络问题、API 暂时不可用等
-                            // 检查 token 是否即将过期（5分钟阈值）
-                            let token_critically_expired = now >= token.timestamp - 60; // 1分钟阈值
                             
-                            if token_critically_expired {
-                                // Token 即将过期（1分钟内），刷新失败风险太高
-                                tracing::warn!(
-                                    "Token 即将过期（{}秒内）且刷新失败 ({}): {}，跳过此账号",
-                                    token.timestamp - now, token.email, e
-                                );
-                                attempted.insert(token.account_id.clone());
-                                last_error = Some(format!("Token expiring soon and refresh failed: {}", e));
-                            } else {
-                                // Token 还有足够的有效期（超过1分钟），可以继续使用
-                                tracing::warn!(
-                                    "Token 刷新失败 ({}): {}，但 token 还有 {}秒有效期，继续使用",
-                                    token.email, e, token.timestamp - now
-                                );
-                                // 不添加到 attempted，继续使用当前 token
-                                // 清除 last_error，因为我们成功处理了这个情况
-                                last_error = None;
+                            // 【优化】标记需要清除锁定
+                            if quota_group != "image_gen" {
+                                if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
+                                    need_update_last_used = Some((String::new(), std::time::Instant::now()));
+                                }
                             }
-                        }
-
-                        // 【优化】标记需要清除锁定，避免在循环内加锁
-                        if quota_group != "image_gen" {
-                            if matches!(&last_used_account_id, Some((id, _)) if id == &token.account_id) {
-                                need_update_last_used = Some((String::new(), std::time::Instant::now()));
-                            }
-                        }
-                        
-                        // 只有标记为 attempted 的才 continue
-                        if attempted.contains(&token.account_id) {
                             continue;
                         }
+                        
+                        // 【关键】临时性错误（网络问题、API 暂时不可用等）：
+                        // 不管 token 剩余多少时间，都尝试使用现有 token
+                        // 如果 token 真的不可用，后续的 API 调用会自然失败并触发其他逻辑
+                        // 这样保证了行为的一致性 - 总是尝试使用，不会"有时能用有时不能用"
+                        tracing::warn!(
+                            "Token 刷新失败 ({}): {}，继续使用现有 token（剩余 {}秒）",
+                            token.email, e, token.timestamp - now
+                        );
+                        // 不标记为 attempted，不 continue，继续使用当前 token
+                        // 清除 last_error，因为我们选择继续使用
+                        last_error = None;
                     }
                 }
             }
